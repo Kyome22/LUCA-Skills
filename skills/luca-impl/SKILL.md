@@ -352,6 +352,54 @@ struct FooView: View {
 - Use `.task { await store.send(.task) }` for the primary lifecycle event
 - Always write a `#Preview` using `.testDependencies()`
 
+### Binding with async Action (`Sources/UserInterface/Extensions/Binding+Extension.swift`)
+
+When a `Binding` property change (e.g. `Toggle`, `Picker`) should trigger an Action, use `Binding<Type>(get:asyncSet:)` instead of `.onChange`. Using `.onChange` risks infinite loops when the Store writes back to the same property; `asyncSet` fires only on user input.
+
+Add this extension once to `UserInterface/Extensions/`:
+
+```swift
+import SwiftUI
+
+extension Binding where Value: Sendable {
+    @preconcurrency init(
+        @_inheritActorContext get: @escaping @isolated(any) @Sendable () -> Value,
+        @_inheritActorContext asyncSet: @escaping @isolated(any) @Sendable (Value) async -> Void
+    ) {
+        self.init(get: get, set: { newValue in Task { await asyncSet(newValue) } })
+    }
+}
+```
+
+Use it in Views like this:
+
+```swift
+Toggle(isOn: Binding<Bool>(
+    get: { store.isOn },
+    asyncSet: { await store.send(.isOnToggleSwitched($0)) }
+)) {
+    Text("flag")
+}
+```
+
+The corresponding Store Action follows the `〜ToggleSwitched(Bool)` naming convention:
+
+```swift
+public enum Action: Sendable {
+    case isOnToggleSwitched(Bool)
+}
+
+public func reduce(_ action: Action) async {
+    switch action {
+    case let .isOnToggleSwitched(value):
+        isOn = value
+        // further processing...
+    }
+}
+```
+
+**Rule:** Use `Binding(get:asyncSet:)` for any two-way binding that must dispatch an Action. Never use `.onChange` for this purpose.
+
 ### Scene (`Sources/UserInterface/Scenes/`)
 
 ```swift
