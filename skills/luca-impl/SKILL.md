@@ -1,5 +1,5 @@
 ---
-name: LUCA Implementation Guide
+name: luca-impl
 description: Implements features following the LUCA architecture — generates DataSource, Model, and UserInterface layer code with all coding rules applied.
 ---
 
@@ -13,7 +13,7 @@ Ask the user what they want to implement if not specified, then produce all requ
 
 ## Environment
 
-- Swift 6.1+, Xcode 16.4+, iOS 17+ / macOS 14+
+- Swift 6.2+, Xcode 26.0+, iOS 17.0+ / macOS 14.0+
 - Local package with three modules: `DataSource`, `Model`, `UserInterface`
 - Only Apple-native frameworks (no third-party dependencies)
 - `@preconcurrency` and `Sendable` conformances as required by Swift 6 strict concurrency
@@ -41,6 +41,7 @@ public struct Foo: Codable, Sendable, Equatable {
 ```
 
 **Rules:**
+
 - Use `struct` or `enum`; no business logic inside entities
 - Conform to `Codable`, `Sendable`, `Equatable` as appropriate
 - Provide a static `.empty` for value-type defaults
@@ -69,6 +70,7 @@ public struct SomeAPIClient: DependencyClient {
 ```
 
 **Rules:**
+
 - Mirror the original API's interface as closely as possible — preserve parameter names and counts
 - When wrapping an instance method, accept the instance as the first argument
 - Always provide `liveValue` (production) and `testValue` (safe no-op stubs)
@@ -107,6 +109,7 @@ public struct FooRepository: Sendable {
 ```
 
 **Rules:**
+
 - Accept required Dependency clients in `init`
 - All data reads and writes go through a Repository — never access clients directly from Model
 
@@ -218,6 +221,7 @@ public struct FooService {
 ```
 
 **Rules:**
+
 - Use `struct` by default; use `actor` only when concurrent mutation is needed
 - **Stateless** — never store mutable state; use `AppStateClient` for app-wide state
 - Accept `AppDependencies` in `init`, build internal repositories/clients from it
@@ -296,6 +300,7 @@ import Observation
 ```
 
 **Rules:**
+
 - `@MainActor @Observable public final class`, conforms to `Composable`
 - Every stored property must be injectable via `init` (mimic memberwise init)
 - Default values go on `init` parameters, not on property declarations
@@ -304,13 +309,13 @@ import Observation
 
 **Action naming conventions:**
 
-| Trigger | Pattern | Example |
-|---|---|---|
-| SwiftUI lifecycle | exact modifier name | `task`, `onDisappear`, `onChangeFoo` |
-| Button tap | `〜ButtonTapped` | `saveButtonTapped`, `deleteButtonTapped` |
-| Toggle | `〜ToggleSwitched(Bool)` | `notificationsToggleSwitched(Bool)` |
-| Picker | `〜PickerSelected(T)` | `themePickerSelected(Theme)` |
-| Async response | `〜Response(Result<T, any Error>)` | `fetchDataResponse(Result<[Foo], any Error>)` |
+| Trigger           | Pattern                            | Example                                       |
+| ----------------- | ---------------------------------- | --------------------------------------------- |
+| SwiftUI lifecycle | exact modifier name                | `task`, `onDisappear`, `onChangeFoo`          |
+| Button tap        | `〜ButtonTapped`                   | `saveButtonTapped`, `deleteButtonTapped`      |
+| Toggle            | `〜ToggleSwitched(Bool)`           | `notificationsToggleSwitched(Bool)`           |
+| Picker            | `〜PickerSelected(T)`              | `themePickerSelected(Theme)`                  |
+| Async response    | `〜Response(Result<T, any Error>)` | `fetchDataResponse(Result<[Foo], any Error>)` |
 
 ---
 
@@ -347,6 +352,7 @@ struct FooView: View {
 ```
 
 **Rules:**
+
 - Name the Store property `store` (also in `ForEach` closures)
 - Send events via `Task { await store.send(.action) }` inside sync closures (Button, etc.)
 - Use `.task { await store.send(.task) }` for the primary lifecycle event
@@ -423,14 +429,33 @@ public struct FooScene: Scene {
 
 ### App entry point (`ProjectName/ProjectNameApp.swift`)
 
+The delegate adaptor differs by platform. `AppDelegate` is always generated.
+
 ```swift
-import UserInterface
+// iOS
+import Model
 import SwiftUI
+import UserInterface
 
 @main
 struct ProjectNameApp: App {
-    // Only include if you need app lifecycle events:
-    // @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    var body: some Scene {
+        FooScene()
+    }
+}
+```
+
+```swift
+// macOS
+import Model
+import SwiftUI
+import UserInterface
+
+@main
+struct ProjectNameApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         FooScene()
@@ -465,6 +490,7 @@ case .child(.doneButtonTapped):
 ```
 
 If the child needs `AppDependencies`, pass it via the Action:
+
 ```swift
 case let .openChildButtonTapped(appDependencies):
     child = .init(appDependencies, action: { [weak self] in ... })

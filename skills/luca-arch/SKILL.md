@@ -1,5 +1,5 @@
 ---
-name: LUCA Architecture Guide
+name: luca-arch
 description: Explains the LUCA architecture — its three-layer structure, key components, data flow, and patterns for SwiftUI app development.
 ---
 
@@ -14,9 +14,10 @@ You are an expert on the **LUCA architecture** for SwiftUI applications. Answer 
 > "Clean layers, Clear flow, Composable design"
 
 **Design goals:**
+
 - Suitable for solo or early-stage app development
 - Only Apple-native frameworks and apple OSS libraries
-- Xcode 16.4+, Swift 6.1+, iOS 17+, macOS 14+
+- Xcode 26.0+, Swift 6.2+, iOS 17.0+ / macOS 14.0+
 
 ---
 
@@ -64,6 +65,7 @@ LocalPackage/
 │       └── Views/                 ← SwiftUI views
 └── Tests/
     └── ModelTests/
+        ├── TestStore.swift   ← testing utility
         ├── ServiceTests/
         └── StoreTests/
 ```
@@ -73,6 +75,7 @@ LocalPackage/
 ## Key Components
 
 ### `DependencyClient` (DataSource)
+
 A protocol that all dependency wrappers conform to. Provides `liveValue` (production) and `testValue` (testing) static instances.
 
 ```swift
@@ -91,6 +94,7 @@ public func testDependency<D: DependencyClient>(of type: D.Type, injection: (ino
 **When to wrap an API as a DependencyClient:** Any API outside your control — file I/O, `UserDefaults`, `NSWorkspace`, third-party SDKs, etc.
 
 ### `AppState` / `AppStateClient` (DataSource)
+
 `AppState` centralizes all app-wide shared state. `AppStateClient` provides thread-safe access via `OSAllocatedUnfairLock`.
 
 ```swift
@@ -121,6 +125,7 @@ public struct AppStateClient: DependencyClient {
 ```
 
 ### `AppDependencies` (Model)
+
 Collects all dependencies and exposes them via `EnvironmentValues` for injection into Stores from Views/Scenes.
 
 ```swift
@@ -136,6 +141,7 @@ extension EnvironmentValues {
 ```
 
 ### `Composable` (Model)
+
 The protocol all Stores conform to. Defines the unidirectional event loop.
 
 ```swift
@@ -179,12 +185,12 @@ Views observe Store properties automatically via `@Observable`. There is no manu
 
 ## Service vs Store
 
-| | Service | Store |
-|---|---|---|
-| Type | `struct` (or `actor`) | `@MainActor @Observable final class` |
-| State | None — stateless | Holds view state as `var` properties |
-| Role | Pure business logic / data processing | Orchestrates UI state + events |
-| Access | Instantiated inside Store's `init` | Held by View as `@State var store` |
+|        | Service                               | Store                                |
+| ------ | ------------------------------------- | ------------------------------------ |
+| Type   | `struct` (or `actor`)                 | `@MainActor @Observable final class` |
+| State  | None — stateless                      | Holds view state as `var` properties |
+| Role   | Pure business logic / data processing | Orchestrates UI state + events       |
+| Access | Instantiated inside Store's `init`    | Held by View as `@State var store`   |
 
 ---
 
@@ -210,6 +216,7 @@ enum Action {
 ```
 
 If the child needs `AppDependencies`, pass it through the Action:
+
 ```swift
 case let .openChild(appDependencies):
     child = .init(appDependencies, action: { [weak self] in ... })

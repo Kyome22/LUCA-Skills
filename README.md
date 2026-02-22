@@ -8,12 +8,12 @@ LUCA (Layered, Unidirectional Data Flow, Composable, Architecture) is a lightwei
 
 ## Skills
 
-| Command | Description |
-| :--- | :--- |
+| Command       | Description                                                                      |
+| :------------ | :------------------------------------------------------------------------------- |
+| `/luca-arch`  | Explains the LUCA architecture: layers, components, data flow, and patterns      |
 | `/luca-setup` | Guides project scaffolding — installing prerequisites and running the `luca` CLI |
-| `/luca-arch` | Explains the LUCA architecture: layers, components, data flow, and patterns |
-| `/luca-impl` | Implements features across all three layers following LUCA coding rules |
-| `/luca-test` | Writes unit tests for Services and Stores using Swift Testing |
+| `/luca-impl`  | Implements features across all three layers following LUCA coding rules          |
+| `/luca-test`  | Writes unit tests for Services and Stores using Swift Testing                    |
 
 ## Installation
 
@@ -34,10 +34,10 @@ cp -r skills/* ~/.claude/skills/
 Invoke a skill from any Claude Code session with its slash command:
 
 ```
-/luca-setup   → set up a new LUCA project from scratch
-/luca-arch    → ask questions about the LUCA architecture
-/luca-impl    → implement a new feature or screen
-/luca-test    → write unit tests for a Store or Service
+/luca-arch  → ask questions about the LUCA architecture
+/luca-setup → set up a new LUCA project from scratch
+/luca-impl  → implement a new feature or screen
+/luca-test  → write unit tests for a Store or Service
 ```
 
 ## Requirements

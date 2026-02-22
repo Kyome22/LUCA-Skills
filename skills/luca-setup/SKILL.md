@@ -1,5 +1,5 @@
 ---
-name: LUCA Project Setup Guide
+name: luca-setup
 description: Guides project scaffolding for LUCA-based Xcode projects — installing prerequisites, running the luca CLI, and understanding the generated project structure.
 ---
 
@@ -9,11 +9,12 @@ You are an expert in setting up new **LUCA architecture** projects. Guide the us
 
 ## Requirements
 
-| Tool | Version |
-|---|---|
-| Xcode | 26.0+ |
-| iOS deployment target | 26.0+ |
-| Swift | 6.2 |
+| Tool                                              | Version |
+| ------------------------------------------------- | ------- |
+| Xcode                                             | 26.0+   |
+| iOS deployment target                             | 17.0+   |
+| macOS deployment target                           | 14.0+   |
+| Swift                                             | 6.2     |
 | [XcodeGen](https://github.com/yonaskolb/XcodeGen) | 2.44.1+ |
 
 ---
@@ -50,21 +51,26 @@ swift run luca
 ## Step 3 — Generate a New Project
 
 ```sh
-luca --name <name> --organization-id <organization-id> [--path <path>]
+luca --name <name> --organization-id <organization-id> [--platform <platform>] [--path <path>]
 ```
 
 **Options**
 
-| Short | Long | Description |
-|---|---|---|
-| `-n` | `--name` | Project name (e.g., `MyApp`) |
-| `-o` | `--organization-id` | Organization identifier (e.g., `com.example`) |
-| `-p` | `--path` | Directory to create the project in (defaults to current directory) |
+| Short  | Long                | Description                                                        |
+| ------ | ------------------- | ------------------------------------------------------------------ |
+| `-n`   | `--name`            | Project name (e.g., `MyApp`)                                       |
+| `-o`   | `--organization-id` | Organization identifier (e.g., `com.example`)                      |
+| (none) | `--platform`        | Target platform: `iOS` or `macOS` (default: `iOS`)                 |
+| `-p`   | `--path`            | Directory to create the project in (defaults to current directory) |
 
 **Example**
 
 ```sh
+# iOS (default)
 luca --name MyApp --organization-id com.example --path ~/Developer
+
+# macOS
+luca --name MyApp --organization-id com.example --platform macOS --path ~/Developer
 ```
 
 ---
@@ -88,7 +94,7 @@ luca --name MyApp --organization-id com.example --path ~/Developer
 │   │   │   ├── Extensions/
 │   │   │   ├── Services/
 │   │   │   ├── Stores/
-│   │   │   ├── AppDelegate.swift    ← optional, for app lifecycle events
+│   │   │   ├── AppDelegate.swift    ← for app lifecycle events
 │   │   │   ├── AppDependencies.swift
 │   │   │   └── Composable.swift
 │   │   └── UserInterface/
@@ -98,6 +104,7 @@ luca --name MyApp --organization-id com.example --path ~/Developer
 │   │       └── Views/
 │   └── Tests/
 │       └── ModelTests/
+│           ├── TestStore.swift    ← testing utility
 │           ├── ServiceTests/
 │           └── StoreTests/
 ├── MyApp/

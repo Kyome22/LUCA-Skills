@@ -1,5 +1,5 @@
 ---
-name: LUCA Test Guide
+name: luca-test
 description: Writes unit tests for LUCA Service and Store components using Swift Testing, with proper naming conventions and dependency mocking patterns.
 ---
 
@@ -11,10 +11,10 @@ Ask the user to share the Store/Service code they want to test if not already pr
 
 ## Test Scope
 
-| Target | Location | Test file location |
-|---|---|---|
+| Target    | Location                  | Test file location               |
+| --------- | ------------------------- | -------------------------------- |
 | `Service` | `Sources/Model/Services/` | `Tests/ModelTests/ServiceTests/` |
-| `Store` | `Sources/Model/Stores/` | `Tests/ModelTests/StoreTests/` |
+| `Store`   | `Sources/Model/Stores/`   | `Tests/ModelTests/StoreTests/`   |
 
 Do **not** write UI tests or snapshot tests — unit tests for Services and Stores are sufficient to cover app functionality in LUCA.
 
@@ -48,6 +48,7 @@ func {methodOrAction}_{condition_optional}_{expectedResult}()
 ```
 
 **Store tests (Action-based):**
+
 ```swift
 func send_task_savedDataIsRestored()
 func send_deleteButtonTapped_itemIsSelected_itemIsDeleted()
@@ -58,6 +59,7 @@ func send_fetchDataResponse_failure_errorIsShown()
 ```
 
 **Service tests (method-based):**
+
 ```swift
 func calculateBMI_heightIsNonZero_correctValueIsReturned()
 func calculateBMI_heightIsZero_zeroIsReturned()
@@ -150,6 +152,47 @@ import DataSource
 
 ---
 
+## TestStore
+
+`TestStore` is a testing utility generated in `Tests/ModelTests/TestStore.swift`. It wraps a `Composable` store, intercepts the parent `action` callback, and records all delegated actions in `actionHistory`.
+
+**When to use:**
+
+- Basic state mutation / side-effect tests → instantiate the Store directly (no TestStore needed)
+- Tests that must verify **which actions the Store delegates to its parent** → use TestStore
+
+**Initialization — always use the factory pattern:**
+
+```swift
+let sut = TestStore { action in
+    FooStore(.testDependencies(), action: action)
+}
+```
+
+The `action` closure passed to the factory is TestStore's interceptor. Any action the Store forwards to its parent via `Composable.send` is recorded.
+
+**Verifying delegated actions with `receive`:**
+
+```swift
+await sut.send(.closeButtonTapped)
+sut.receive {
+    if case .closeButtonTapped = $0 { true } else { false }
+}
+```
+
+- `send` dispatches the action and then removes the directly passed-through action (since `Composable.send` always calls `action` with the same value)
+- `receive` verifies that a specific action appeared in `actionHistory` from an async internal dispatch; call it once per expected delegation before the next `send`
+- `Action` is not required to be `Equatable` — always use pattern matching (`if case`) inside the closure
+- If `actionHistory` is non-empty when `send` is called again, the test fails automatically
+
+**Accessing Store properties via dynamic member lookup:**
+
+```swift
+#expect(sut.items.count == 3)   // proxies wrappedStore.items
+```
+
+---
+
 ## Store Test Patterns
 
 ### Basic read test
@@ -226,15 +269,18 @@ func send_task_tutorialIsShownOnFirstLaunch() async {
 
 ### Parent action delegation test
 
-When testing that a Store correctly delegates to its parent via `action`:
+When testing that a Store correctly delegates to its parent via `action`, use `TestStore`:
 
 ```swift
 @Test
 func send_closeButtonTapped_parentReceivesAction() async {
-    let received = OSAllocatedUnfairLock<ChildStore.Action?>(initialState: nil)
-    let sut = ChildStore(action: { received.withLock { $0 = $1 } })
+    let sut = TestStore { action in
+        ChildStore(action: action)
+    }
     await sut.send(.closeButtonTapped)
-    #expect(received.withLock(\.self) == .closeButtonTapped)
+    sut.receive {
+        if case .closeButtonTapped = $0 { true } else { false }
+    }
 }
 ```
 
