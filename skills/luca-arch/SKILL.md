@@ -17,7 +17,7 @@ You are an expert on the **LUCA architecture** for SwiftUI applications. Answer 
 
 - Suitable for solo or early-stage app development
 - Only Apple-native frameworks and apple OSS libraries
-- Xcode 26.0+, Swift 6.2+, iOS 17.0+ / macOS 14.0+
+- Xcode 26.0+, Swift 6.2+, iOS 18.0+ / macOS 15.0+
 
 ---
 
@@ -47,7 +47,8 @@ LocalPackage/
 │   │   ├── Dependencies/          ← DependencyClient implementations
 │   │   │   └── AppStateClient.swift
 │   │   ├── Entities/              ← Data models (struct/enum)
-│   │   │   └── AppState.swift
+│   │   │   ├── AppState.swift
+│   │   │   └── AsyncStreamBundle.swift  ← reactive state stream
 │   │   ├── Extensions/
 │   │   ├── Repositories/          ← Data read/write access
 │   │   └── DependencyClient.swift ← Base protocol
@@ -95,34 +96,102 @@ public func testDependency<D: DependencyClient>(of type: D.Type, injection: (ino
 
 ### `AppState` / `AppStateClient` (DataSource)
 
-`AppState` centralizes all app-wide shared state. `AppStateClient` provides thread-safe access via `OSAllocatedUnfairLock`.
+`AppState` centralizes all app-wide shared state. `AppStateClient` owns an `OSAllocatedUnfairLock<AppState>` and delegates `withLock` to it, so the **entire body runs under the lock** — read-modify-write is atomic.
 
 ```swift
-public struct AppStateClient: DependencyClient {
-    var getAppState: @Sendable () -> AppState
-    var setAppState: @Sendable (AppState) -> Void
+import os
 
-    public func withLock<R: Sendable>(_ body: @Sendable (inout AppState) throws -> R) rethrows -> R {
-        var state = getAppState()
-        let result = try body(&state)
-        setAppState(state)
-        return result
+public struct AppStateClient: DependencyClient {
+    private let lock: OSAllocatedUnfairLock<AppState>
+
+    private init(lock: OSAllocatedUnfairLock<AppState>) {
+        self.lock = lock
     }
 
-    public static let liveValue: Self = {
-        let state = OSAllocatedUnfairLock<AppState>(initialState: .init())
-        return Self(
-            getAppState: { state.withLock(\.self) },
-            setAppState: { value in state.withLock { $0 = value } }
-        )
-    }()
+    public func withLock<R: Sendable>(_ body: @Sendable (inout AppState) throws -> R) rethrows -> R {
+        try lock.withLock(body)
+    }
 
-    public static let testValue = Self(
-        getAppState: { .init() },
-        setAppState: { _ in }
-    )
+    public static let liveValue = Self(lock: .init(initialState: .init()))
+    public static let testValue = Self(lock: .init(initialState: .init()))
+
+    public static func testDependency(_ appState: OSAllocatedUnfairLock<AppState>) -> Self {
+        Self(lock: appState)
+    }
 }
 ```
+
+> The lock is non-recursive — never call `withLock` (or `send`, below) again inside a `withLock` body.
+>
+> **The lock is pluggable.** `OSAllocatedUnfairLock` (Apple-native, no extra dependency) is the LUCA default. Any type with equivalent `withLock(_:)` semantics works just as well — Kyome's own apps use `Kyome22/AllocatedUnfairLock`, but that is a personal preference, not a LUCA requirement.
+
+### `AsyncStreamBundle` & state subscription (DataSource)
+
+To let multiple Stores **reactively observe** shared state, `AppState` holds `AsyncStreamBundle<T>` fields. Each bundle wraps an `AsyncStream` shared via swift-async-algorithms `share()`, and remembers the last value (`latestValue`) for synchronous read-back.
+
+```swift
+import AsyncAlgorithms
+
+public typealias AsyncShareStream<T: Sendable> = Sendable & AsyncSequence<T, AsyncStream<T>.__AsyncSequence_Failure>
+
+public struct AsyncStreamBundle<T>: Sendable where T: Sendable {
+    public let stream: any AsyncShareStream<T>
+    private let continuation: AsyncStream<T>.Continuation
+    public private(set) var latestValue: T? = nil
+
+    public init() {
+        let (stream, continuation) = AsyncStream.makeStream(of: T.self, bufferingPolicy: .bufferingNewest(1))
+        self.stream = stream.share(bufferingPolicy: .bufferingLatest(1))
+        self.continuation = continuation
+    }
+
+    public mutating func send(_ value: T) {
+        latestValue = value
+        continuation.yield(value)
+    }
+}
+```
+
+`AppStateClient` exposes two `send` overloads (the single atomic write path — never call `$0.x.send(...)` directly outside these):
+
+```swift
+// push a finished value
+public func send<T: Sendable>(
+    _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable, _ value: T
+) {
+    lock.withLock { $0[keyPath: keyPath].send(value) }
+}
+
+// read-modify-write, starting from latestValue (or a default)
+public func send<T: Sendable>(
+    _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable,
+    default defaultValue: @autoclosure @Sendable () -> T, _ transform: @Sendable (inout T) -> Void
+) {
+    lock.withLock { appState in
+        var value = appState[keyPath: keyPath].latestValue ?? defaultValue()
+        transform(&value)
+        appState[keyPath: keyPath].send(value)
+    }
+}
+```
+
+**Producer** (a Service) pushes values; **consumer** (a Store) subscribes:
+
+```swift
+// Producer: Service
+appStateClient.send(\.count, default: 0) { $0 += 1 }
+
+// Consumer: Store, inside reduce(.task)
+if let latest = appStateClient.withLock(\.count.latestValue) { count = latest }
+task?.cancel()
+task = Task { [weak self, appStateClient] in
+    let stream = appStateClient.withLock(\.count.stream)
+    for await value in stream { self?.count = value }   // Task inherits @MainActor — no await needed
+}
+// and cancel it in reduce(.onDisappear): task?.cancel(); task = nil
+```
+
+`share` does **not** replay past values to a late subscriber — it only delivers elements produced after that subscriber attaches. That is why the Store seeds its current value synchronously from `latestValue` (read under the lock in `reduce(.task)`) before starting `for await`. `bufferingLatest(1)` on the share keeps a slow consumer from back-pressuring the others — it drops older elements instead of suspending the source (the default `.bounded(1)` would suspend).
 
 ### `AppDependencies` (Model)
 

@@ -267,6 +267,56 @@ func send_task_tutorialIsShownOnFirstLaunch() async {
 }
 ```
 
+### Stream producer test (Service → `AsyncStreamBundle`)
+
+A Service that pushes into an `AppState` stream is verified **synchronously** via `latestValue` — no waiting needed:
+
+```swift
+@Test
+func increment_sends_incremented_count() {
+    let appState = OSAllocatedUnfairLock<AppState>(initialState: .init())
+    let sut = CounterService(.testDependencies(appStateClient: .testDependency(appState)))
+    sut.increment()
+    sut.increment()
+    #expect(appState.withLock(\.count.latestValue) == 2)
+}
+```
+
+### Stream consumer test (Store subscription)
+
+A Store that subscribes to a stream reacts **asynchronously**, so push a value then poll with `waitUntil`. Always send `.onDisappear` at the end to cancel the subscription.
+
+Add this helper once at `Tests/ModelTests/WaitUntil.swift`:
+
+```swift
+import Foundation
+
+@discardableResult
+func waitUntil(_ condition: @MainActor () -> Bool) async -> Bool {
+    for _ in 0 ..< 200 {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
+}
+```
+
+```swift
+@MainActor @Test
+func observes_count_stream() async {
+    let appState = OSAllocatedUnfairLock<AppState>(initialState: .init())
+    let sut = ContentStore(.testDependencies(appStateClient: .testDependency(appState)))
+    await sut.send(.task("Test"))
+    appState.withLock { $0.count.send(5) }
+    await waitUntil { sut.count == 5 }
+    #expect(sut.count == 5)
+    await sut.send(.onDisappear)
+}
+```
+
+- Producer tests are non-flaky (`latestValue` is synchronous). Consumer tests are inherently async — use `waitUntil`, never assert immediately after a `send`.
+- To drive the full round trip, send `.task` (establish subscription) then the producing Action, then `waitUntil` on the resulting state.
+
 ### Parent action delegation test
 
 When testing that a Store correctly delegates to its parent via `action`, use `TestStore`:

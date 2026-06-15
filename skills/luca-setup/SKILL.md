@@ -12,8 +12,8 @@ You are an expert in setting up new **LUCA architecture** projects. Guide the us
 | Tool                                              | Version |
 | ------------------------------------------------- | ------- |
 | Xcode                                             | 26.0+   |
-| iOS deployment target                             | 17.0+   |
-| macOS deployment target                           | 14.0+   |
+| iOS deployment target                             | 18.0+   |
+| macOS deployment target                           | 15.0+   |
 | Swift                                             | 6.2     |
 | [XcodeGen](https://github.com/yonaskolb/XcodeGen) | 2.44.1+ |
 
@@ -86,7 +86,8 @@ luca --name MyApp --organization-id com.example --platform macOS --path ~/Develo
 │   │   │   ├── Dependencies/
 │   │   │   │   └── AppStateClient.swift
 │   │   │   ├── Entities/
-│   │   │   │   └── AppState.swift
+│   │   │   │   ├── AppState.swift
+│   │   │   │   └── AsyncStreamBundle.swift
 │   │   │   ├── Extensions/
 │   │   │   ├── Repositories/
 │   │   │   └── DependencyClient.swift

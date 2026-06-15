@@ -13,9 +13,9 @@ Ask the user what they want to implement if not specified, then produce all requ
 
 ## Environment
 
-- Swift 6.2+, Xcode 26.0+, iOS 17.0+ / macOS 14.0+
+- Swift 6.2+, Xcode 26.0+, iOS 18.0+ / macOS 15.0+
 - Local package with three modules: `DataSource`, `Model`, `UserInterface`
-- Only Apple-native frameworks (no third-party dependencies)
+- Apple-native frameworks and Apple OSS only (e.g. `swift-log`, `swift-async-algorithms`)
 - `@preconcurrency` and `Sendable` conformances as required by Swift 6 strict concurrency
 
 ---
@@ -129,34 +129,130 @@ public struct AppState: Sendable {
 
 ### AppStateClient (`Sources/DataSource/Dependencies/AppStateClient.swift`)
 
+Holds an `OSAllocatedUnfairLock<AppState>` and delegates `withLock` to it, so the whole body is atomic. Do **not** revert to a get-copy-set implementation — that breaks atomicity (lost updates under concurrent writes). The lock is non-recursive: never nest `withLock`/`send` calls. The lock type is pluggable — `OSAllocatedUnfairLock` is the dependency-free default; any equivalent `withLock(_:)` type works (Kyome's own apps use `Kyome22/AllocatedUnfairLock`, a personal preference, not a requirement).
+
 ```swift
 import os
 
 public struct AppStateClient: DependencyClient {
-    var getAppState: @Sendable () -> AppState
-    var setAppState: @Sendable (AppState) -> Void
+    private let lock: OSAllocatedUnfairLock<AppState>
 
-    public func withLock<R: Sendable>(_ body: @Sendable (inout AppState) throws -> R) rethrows -> R {
-        var state = getAppState()
-        let result = try body(&state)
-        setAppState(state)
-        return result
+    private init(lock: OSAllocatedUnfairLock<AppState>) {
+        self.lock = lock
     }
 
-    public static let liveValue: Self = {
-        let state = OSAllocatedUnfairLock<AppState>(initialState: .init())
-        return Self(
-            getAppState: { state.withLock(\.self) },
-            setAppState: { value in state.withLock { $0 = value } }
-        )
-    }()
+    public func withLock<R: Sendable>(_ body: @Sendable (inout AppState) throws -> R) rethrows -> R {
+        try lock.withLock(body)
+    }
 
-    public static let testValue = Self(
-        getAppState: { .init() },
-        setAppState: { _ in }
-    )
+    // Stream send — the single atomic write path for AsyncStreamBundle fields.
+    public func send<T: Sendable>(
+        _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable,
+        _ value: T
+    ) {
+        lock.withLock { $0[keyPath: keyPath].send(value) }
+    }
+
+    public func send<T: Sendable>(
+        _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable,
+        default defaultValue: @autoclosure @Sendable () -> T,
+        _ transform: @Sendable (inout T) -> Void
+    ) {
+        lock.withLock { appState in
+            var value = appState[keyPath: keyPath].latestValue ?? defaultValue()
+            transform(&value)
+            appState[keyPath: keyPath].send(value)
+        }
+    }
+
+    public static let liveValue = Self(lock: .init(initialState: .init()))
+    public static let testValue = Self(lock: .init(initialState: .init()))
+
+    public static func testDependency(_ appState: OSAllocatedUnfairLock<AppState>) -> Self {
+        Self(lock: appState)
+    }
 }
 ```
+
+### Reactive state with `AsyncStreamBundle` (`Sources/DataSource/Entities/AsyncStreamBundle.swift`)
+
+Use this when shared state must be **observed reactively** by one or more Stores. Copy this type verbatim (depends on the `AsyncAlgorithms` product of `swift-async-algorithms`, linked into the `DataSource` target).
+
+```swift
+import AsyncAlgorithms
+
+public typealias AsyncShareStream<T: Sendable> = Sendable & AsyncSequence<T, AsyncStream<T>.__AsyncSequence_Failure>
+
+public struct AsyncStreamBundle<T>: Sendable where T: Sendable {
+    public let stream: any AsyncShareStream<T>
+    private let continuation: AsyncStream<T>.Continuation
+    public private(set) var latestValue: T? = nil
+
+    public init() {
+        let (stream, continuation) = AsyncStream.makeStream(of: T.self, bufferingPolicy: .bufferingNewest(1))
+        self.stream = stream.share(bufferingPolicy: .bufferingLatest(1))
+        self.continuation = continuation
+    }
+
+    public mutating func send(_ value: T) {
+        latestValue = value
+        continuation.yield(value)
+    }
+}
+
+extension AsyncStreamBundle where T == Void {
+    public mutating func send() { send(()) }
+}
+```
+
+Declare bundles as fields on `AppState` (initialized inline, not in `init`):
+
+```swift
+public struct AppState: Sendable {
+    public var hasAlreadyBootstrap: Bool
+    public var count = AsyncStreamBundle<Int>()
+    // ...
+}
+```
+
+**Producer (Service)** pushes values through `appStateClient.send`:
+
+```swift
+struct CounterService {
+    private let appStateClient: AppStateClient
+    init(_ appDependencies: AppDependencies) { self.appStateClient = appDependencies.appStateClient }
+
+    func increment() { appStateClient.send(\.count, default: 0) { $0 += 1 } }  // read-modify-write
+    func reset() { appStateClient.send(\.count, 0) }                            // finished value
+}
+```
+
+- The `transform` closure is `@Sendable`; any helper it calls must not capture `self` (make it a `private static func`).
+- Never call `$0.count.send(...)` outside `AppStateClient.send` — that bypasses the atomic write path.
+
+**Consumer (Store)** subscribes in `reduce(.task)` and cancels in `reduce(.onDisappear)`:
+
+```swift
+@ObservationIgnored private var task: Task<Void, Never>?
+
+case let .task(screenName):
+    if let latest = appStateClient.withLock(\.count.latestValue) { count = latest }
+    task?.cancel()
+    task = Task { [weak self, appStateClient] in
+        let stream = appStateClient.withLock(\.count.stream)
+        for await value in stream { self?.count = value }
+    }
+
+case .onDisappear:
+    task?.cancel()
+    task = nil
+```
+
+- `task` is `@ObservationIgnored` so it doesn't trigger observation.
+- A plain `Task {}` created in a `@MainActor reduce` inherits `@MainActor`, so updating `self?.count` needs no `await`. (For multiple streams use `withTaskGroup { group in group.addTask { ... } }`.)
+- Pair `.task` with a `.onDisappear` Action in the View (`.onDisappear { Task { await store.send(.onDisappear) } }`) to tear the subscription down.
+
+> `Task.immediate` / `addImmediateTask` (which make subscription establishment synchronous) require iOS 26 / macOS 26. On iOS 18 / macOS 15 use plain `Task {}` / `addTask`. `share` does not replay to late subscribers, so the consumer seeds the current value from `latestValue` at subscription time (as above); tests use `waitUntil` for subsequent async deliveries.
 
 ---
 
