@@ -69,12 +69,17 @@ public struct SomeAPIClient: DependencyClient {
 }
 ```
 
-**Rules:**
+**Rules:** A client is *only* a test seam over a side effect outside your control — never a convenience or
+logic layer. Keep it a thin 1:1 wrapper:
 
 - Mirror the original API's interface as closely as possible — preserve parameter names and counts
 - When wrapping an instance method, accept the instance as the first argument
 - Always provide `liveValue` (production) and `testValue` (safe no-op stubs)
 - Mark all closures `@Sendable`
+- No composite/convenience operations, no hardcoded arguments, no stored state or stream-producing "box"
+  (the only stateful client is `AppStateClient`). Sequencing and logic live in the Service/Store that calls
+  the client — it stays testable because the client is mockable. The layer is mechanical: one uncontrolled
+  call site → one thin closure.
 
 ### Type-safe keys (`Sources/DataSource/Extensions/String+Extension.swift`)
 
@@ -131,79 +136,18 @@ public struct AppState: Sendable {
 
 Holds an `OSAllocatedUnfairLock<AppState>` and delegates `withLock` to it, so the whole body is atomic. Do **not** revert to a get-copy-set implementation — that breaks atomicity (lost updates under concurrent writes). The lock is non-recursive: never nest `withLock`/`send` calls. The lock type is pluggable — `OSAllocatedUnfairLock` is the dependency-free default; any equivalent `withLock(_:)` type works (Kyome's own apps use `Kyome22/AllocatedUnfairLock`, a personal preference, not a requirement).
 
-```swift
-import os
+**Copy verbatim** from [`templates/AppStateClient.swift.template`](templates/AppStateClient.swift.template) (this skill's folder) — it is fixed LUCA boilerplate, not something to redesign. Its surface:
 
-public struct AppStateClient: DependencyClient {
-    private let lock: OSAllocatedUnfairLock<AppState>
+- `withLock(_:)` — runs the body under the lock (atomic read-modify-write).
+- `send(\.foo, value)` — push a finished value to an `AsyncStreamBundle` field.
+- `send(\.foo, default:_:)` — read-modify-write a bundle's `latestValue` (seeded by `default`).
+- `liveValue` / `testValue`, and `testDependency(_ appState:)` to inject a shared lock in tests.
 
-    private init(lock: OSAllocatedUnfairLock<AppState>) {
-        self.lock = lock
-    }
-
-    public func withLock<R: Sendable>(_ body: @Sendable (inout AppState) throws -> R) rethrows -> R {
-        try lock.withLock(body)
-    }
-
-    // Stream send — the single atomic write path for AsyncStreamBundle fields.
-    public func send<T: Sendable>(
-        _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable,
-        _ value: T
-    ) {
-        lock.withLock { $0[keyPath: keyPath].send(value) }
-    }
-
-    public func send<T: Sendable>(
-        _ keyPath: any WritableKeyPath<AppState, AsyncStreamBundle<T>> & Sendable,
-        default defaultValue: @autoclosure @Sendable () -> T,
-        _ transform: @Sendable (inout T) -> Void
-    ) {
-        lock.withLock { appState in
-            var value = appState[keyPath: keyPath].latestValue ?? defaultValue()
-            transform(&value)
-            appState[keyPath: keyPath].send(value)
-        }
-    }
-
-    public static let liveValue = Self(lock: .init(initialState: .init()))
-    public static let testValue = Self(lock: .init(initialState: .init()))
-
-    public static func testDependency(_ appState: OSAllocatedUnfairLock<AppState>) -> Self {
-        Self(lock: appState)
-    }
-}
-```
+These two `send` overloads are the **only** atomic write path for `AsyncStreamBundle` fields — never mutate a bundle through a bare `withLock { $0.foo.send(...) }`.
 
 ### Reactive state with `AsyncStreamBundle` (`Sources/DataSource/Entities/AsyncStreamBundle.swift`)
 
-Use this when shared state must be **observed reactively** by one or more Stores. Copy this type verbatim (depends on the `AsyncAlgorithms` product of `swift-async-algorithms`, linked into the `DataSource` target).
-
-```swift
-import AsyncAlgorithms
-
-public typealias AsyncShareStream<T: Sendable> = Sendable & AsyncSequence<T, AsyncStream<T>.__AsyncSequence_Failure>
-
-public struct AsyncStreamBundle<T>: Sendable where T: Sendable {
-    public let stream: any AsyncShareStream<T>
-    private let continuation: AsyncStream<T>.Continuation
-    public private(set) var latestValue: T? = nil
-
-    public init() {
-        let (stream, continuation) = AsyncStream.makeStream(of: T.self, bufferingPolicy: .bufferingNewest(1))
-        self.stream = stream.share(bufferingPolicy: .bufferingLatest(1))
-        self.continuation = continuation
-    }
-
-    public mutating func send(_ value: T) {
-        latestValue = value
-        continuation.yield(value)
-    }
-}
-
-extension AsyncStreamBundle where T == Void {
-    public mutating func send() { send(()) }
-}
-```
+Use this when shared state must be **observed reactively** by one or more Stores. **Copy this type verbatim** from [`templates/AsyncStreamBundle.swift.template`](templates/AsyncStreamBundle.swift.template) (fixed LUCA boilerplate; depends on the `AsyncAlgorithms` product of `swift-async-algorithms`, linked into the `DataSource` target). It wraps an `AsyncStream` shared via `.share(bufferingPolicy: .bufferingLatest(1))`, exposing `stream` (subscribe with `for await`), `latestValue` (current value for seeding), and a `mutating send(_:)` (plus a `Void` convenience `send()`).
 
 Declare bundles as fields on `AppState` (initialized inline, not in `init`):
 
