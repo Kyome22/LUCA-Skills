@@ -122,6 +122,33 @@ let deps = AppDependencies.testDependencies(
 #expect(appState.withLock(\.hasAlreadyBootstrap) == true)
 ```
 
+### Stateful clients & repositories
+
+A stateful, side-effecting dependency (UserDefaults, a file store, the keychain) does **not** need a
+bespoke stateful fake class or a shared storage helper. Build the minimal state inline per test with
+`OSAllocatedUnfairLock` + `testDependency(of:)`, choosing the shape by what you verify:
+
+- **Verify a write** → capture the setter into a lock and assert the recorded call (no stored state).
+- **Provide a read** → stub the getter to return the expected value (`$0.integer = { _ in 3 }`).
+- **In-flow round-trip** (a `reduce`/Service persists a value then immediately re-reads it) → back that
+  **one key** with a lock so `set` → `get` connect:
+
+```swift
+let stored = OSAllocatedUnfairLock<Int>(initialState: 0)
+let client = testDependency(of: UserDefaultsClient.self) {
+    $0.integer = { key in key == .triggerMethod ? stored.withLock(\.self) : 0 }
+    $0.set = { value, key in
+        let raw = value as? Int            // cast OUTSIDE withLock — `value: Any?` is not Sendable
+        if key == .triggerMethod { stored.withLock { $0 = raw } }
+    }
+}
+```
+
+A **Repository is composed of clients, not a test seam**: construct the real Repository over a mocked
+Client and observe the client interaction — don't read persistence back through a *second* Repository
+instance. For **migration / transform** logic (read legacy → write current → delete legacy), stub the
+legacy reads and capture the `set`/`removeObject` calls; no key-value store is required.
+
 ---
 
 ## Service Test Pattern
