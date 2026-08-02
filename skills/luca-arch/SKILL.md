@@ -211,17 +211,17 @@ public func send<T: Sendable>(
 // Producer: Service
 appStateClient.send(\.count, default: 0) { $0 += 1 }
 
-// Consumer: Store, inside reduce(.task)
+// Consumer: Store, inside reduce(.viewAppeared)
 if let latest = appStateClient.withLock(\.count.latestValue) { count = latest }
 task?.cancel()
 task = Task { [weak self, appStateClient] in
     let stream = appStateClient.withLock(\.count.stream)
     for await value in stream { self?.count = value }   // Task inherits @MainActor — no await needed
 }
-// and cancel it in reduce(.onDisappear): task?.cancel(); task = nil
+// and cancel it in reduce(.viewDisappeared): task?.cancel(); task = nil
 ```
 
-`share` does **not** replay past values to a late subscriber — it only delivers elements produced after that subscriber attaches. That is why the Store seeds its current value synchronously from `latestValue` (read under the lock in `reduce(.task)`) before starting `for await`. `bufferingLatest(1)` on the share keeps a slow consumer from back-pressuring the others — it drops older elements instead of suspending the source (the default `.bounded(1)` would suspend).
+`share` does **not** replay past values to a late subscriber — it only delivers elements produced after that subscriber attaches. That is why the Store seeds its current value synchronously from `latestValue` (read under the lock in `reduce(.viewAppeared)`) before starting `for await`. `bufferingLatest(1)` on the share keeps a slow consumer from back-pressuring the others — it drops older elements instead of suspending the source (the default `.bounded(1)` would suspend).
 
 ### `AppDependencies` (Model)
 

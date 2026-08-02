@@ -174,12 +174,12 @@ struct CounterService {
 - The `transform` closure is `@Sendable`; any helper it calls must not capture `self` (make it a `private static func`).
 - Never call `$0.count.send(...)` outside `AppStateClient.send` — that bypasses the atomic write path.
 
-**Consumer (Store)** subscribes in `reduce(.task)` and cancels in `reduce(.onDisappear)`:
+**Consumer (Store)** subscribes in `reduce(.viewAppeared)` and cancels in `reduce(.viewDisappeared)`:
 
 ```swift
 @ObservationIgnored private var task: Task<Void, Never>?
 
-case let .task(screenName):
+case let .viewAppeared(screenName):
     if let latest = appStateClient.withLock(\.count.latestValue) { count = latest }
     task?.cancel()
     task = Task { [weak self, appStateClient] in
@@ -187,14 +187,14 @@ case let .task(screenName):
         for await value in stream { self?.count = value }
     }
 
-case .onDisappear:
+case .viewDisappeared:
     task?.cancel()
     task = nil
 ```
 
 - `task` is `@ObservationIgnored` so it doesn't trigger observation.
 - A plain `Task {}` created in a `@MainActor reduce` inherits `@MainActor`, so updating `self?.count` needs no `await`. (For multiple streams use `withTaskGroup { group in group.addTask { ... } }`.)
-- Pair `.task` with a `.onDisappear` Action in the View (`.onDisappear { Task { await store.send(.onDisappear) } }`) to tear the subscription down.
+- Pair `.viewAppeared` with a `.viewDisappeared` Action in the View (`.onDisappear { Task { await store.send(.viewDisappeared) } }`) to tear the subscription down. The SwiftUI modifiers keep their names; only the Actions they send are named after the event.
 
 > `Task.immediate` / `addImmediateTask` (which make subscription establishment synchronous) require iOS 26 / macOS 26. On iOS 18 / macOS 15 use plain `Task {}` / `addTask`. `share` does not replay to late subscribers, so the consumer seeds the current value from `latestValue` at subscription time (as above); tests use `waitUntil` for subsequent async deliveries.
 
@@ -317,7 +317,7 @@ import Observation
 
     public func reduce(_ action: Action) async {
         switch action {
-        case .task:
+        case .viewAppeared:
             items = fooRepository.foo.items
 
         case .refreshButtonTapped:
@@ -332,7 +332,7 @@ import Observation
     }
 
     public enum Action: Sendable {
-        case task
+        case viewAppeared
         case refreshButtonTapped
         case deleteButtonTapped(Foo.ID)
     }
@@ -349,13 +349,21 @@ import Observation
 
 **Action naming conventions:**
 
+Every case reads **subject first, past tense** — it names what happened, never which SwiftUI modifier fired.
+
 | Trigger           | Pattern                            | Example                                       |
 | ----------------- | ---------------------------------- | --------------------------------------------- |
-| SwiftUI lifecycle | exact modifier name                | `task`, `onDisappear`, `onChangeFoo`          |
+| View lifecycle    | `viewAppeared(String)` / `viewDisappeared` | screen name payload only where `screenView` is logged |
 | Button tap        | `〜ButtonTapped`                   | `saveButtonTapped`, `deleteButtonTapped`      |
 | Toggle            | `〜ToggleSwitched(Bool)`           | `notificationsToggleSwitched(Bool)`           |
 | Picker            | `〜PickerSelected(T)`              | `themePickerSelected(Theme)`                  |
+| Value change      | `〜Changed(T)`                     | `sortOrderChanged(SortOrder)`                 |
+| Gesture / drop    | `〜Tapped`, `〜Moved`, `〜Dropped` | `rowMoved(IndexSet, Int)`, `filesDropped([URL])` |
 | Async response    | `〜Response(Result<T, any Error>)` | `fetchDataResponse(Result<[Foo], any Error>)` |
+| Child → parent    | `errorOccurred({PREFIX}Error)`     | `errorOccurred(RCNError)`                     |
+
+Anti-patterns, all named after the modifier rather than the event:
+`onDisappear`, `onDropFiles`, `onCompletionFileImporter`, `onTapRow`, `onMoveRow`, `onDismissSheet`.
 
 ---
 
@@ -381,7 +389,7 @@ struct FooView: View {
             }
         }
         .task {
-            await store.send(.task)
+            await store.send(.viewAppeared)
         }
     }
 }
@@ -395,7 +403,7 @@ struct FooView: View {
 
 - Name the Store property `store` (also in `ForEach` closures)
 - Send events via `Task { await store.send(.action) }` inside sync closures (Button, etc.)
-- Use `.task { await store.send(.task) }` for the primary lifecycle event
+- Use `.task { await store.send(.viewAppeared) }` for the primary lifecycle event
 - Always write a `#Preview` using `.testDependencies()`
 
 ### Binding with async Action (`Sources/UserInterface/Extensions/Binding+Extension.swift`)
