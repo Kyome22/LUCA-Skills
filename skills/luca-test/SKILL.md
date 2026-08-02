@@ -35,7 +35,7 @@ Mark test structs/classes with `@MainActor` when testing Stores (since Stores ar
 ```swift
 @MainActor struct FooStoreTests {
     @Test
-    func send_task_itemsAreLoaded() async { ... }
+    func send_viewAppeared_itemsAreLoaded() async { ... }
 }
 ```
 
@@ -50,7 +50,7 @@ func {methodOrAction}_{condition_optional}_{expectedResult}()
 **Store tests (Action-based):**
 
 ```swift
-func send_task_savedDataIsRestored()
+func send_viewAppeared_savedDataIsRestored()
 func send_deleteButtonTapped_itemIsSelected_itemIsDeleted()
 func send_notificationsToggleSwitched_notificationsAreDisabled_notificationsAreEnabled()
 func send_themePickerSelected_themeIsUpdated()
@@ -227,7 +227,7 @@ sut.receive {
 ```swift
 @MainActor struct FooStoreTests {
     @Test
-    func send_task_savedDataIsRestored() async {
+    func send_viewAppeared_savedDataIsRestored() async {
         let expected = Foo(name: "Alice", value: 42)
         let sut = FooStore(
             .testDependencies(
@@ -237,7 +237,7 @@ sut.receive {
             ),
             action: { _ in }
         )
-        await sut.send(.task)
+        await sut.send(.viewAppeared)
         #expect(sut.foo == expected)
     }
 }
@@ -282,13 +282,13 @@ func send_saveButtonTapped_dataIsPersisted() async {
 
 ```swift
 @Test
-func send_task_tutorialIsShownOnFirstLaunch() async {
+func send_viewAppeared_tutorialIsShownOnFirstLaunch() async {
     let appState = OSAllocatedUnfairLock<AppState>(initialState: .init(hasAlreadyTutorial: false))
     let sut = FooStore(
         .testDependencies(appStateClient: .testDependency(appState)),
         action: { _ in }
     )
-    await sut.send(.task)
+    await sut.send(.viewAppeared)
     #expect(sut.isPresentedTutorial == true)
     #expect(appState.withLock(\.hasAlreadyTutorial) == true)
 }
@@ -311,7 +311,7 @@ func increment_sends_incremented_count() {
 
 ### Stream consumer test (Store subscription)
 
-A Store that subscribes to a stream reacts **asynchronously**, so push a value then poll with `waitUntil`. Always send `.onDisappear` at the end to cancel the subscription.
+A Store that subscribes to a stream reacts **asynchronously**, so push a value then poll with `waitUntil`. Always send `.viewDisappeared` at the end to cancel the subscription.
 
 Add this helper once at `Tests/ModelTests/WaitUntil.swift`:
 
@@ -333,11 +333,11 @@ func waitUntil(_ condition: @MainActor () -> Bool) async -> Bool {
 func observes_count_stream() async {
     let appState = OSAllocatedUnfairLock<AppState>(initialState: .init())
     let sut = ContentStore(.testDependencies(appStateClient: .testDependency(appState)))
-    await sut.send(.task("Test"))
+    await sut.send(.viewAppeared("Test"))
     appState.withLock { $0.count.send(5) }
     await waitUntil { sut.count == 5 }
     #expect(sut.count == 5)
-    await sut.send(.onDisappear)
+    await sut.send(.viewDisappeared)
 }
 ```
 
