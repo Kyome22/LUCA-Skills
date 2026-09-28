@@ -537,12 +537,19 @@ case .child(.doneButtonTapped):
     child = nil
 ```
 
-If the child needs `AppDependencies`, pass it via the Action:
+If the child needs `AppDependencies`, hold the container on the parent — never pass it via the
+`Action`:
 
 ```swift
-case let .openChildButtonTapped(appDependencies):
+private let appDependencies: AppDependencies
+
+case .openChildButtonTapped:
     child = .init(appDependencies, action: { [weak self] in ... })
 ```
+
+A View reads `\.appDependencies` only to construct a store it owns. Routing it back in through an
+`Action` puts DI wiring in the View and lets a caller give the child a different container than the
+parent was built with.
 
 ---
 

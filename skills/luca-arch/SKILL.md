@@ -314,12 +314,29 @@ enum Action {
 }
 ```
 
-If the child needs `AppDependencies`, pass it through the Action:
+If the child needs `AppDependencies`, the parent holds the container itself — never route it
+through the `Action`:
 
 ```swift
-case let .openChild(appDependencies):
-    child = .init(appDependencies, action: { [weak self] in ... })
+@MainActor @Observable public final class ParentStore: Composable {
+    private let appDependencies: AppDependencies
+
+    public init(_ appDependencies: AppDependencies, ...) {
+        self.appDependencies = appDependencies
+        ...
+    }
+
+    // In reduce:
+    case .openChild:
+        child = .init(appDependencies, action: { [weak self] in ... })
+}
 ```
+
+A View reads `\.appDependencies` only to construct a store it owns; that is what the environment
+value is for. A parent Store is itself the composition point for its children, so it needs nothing
+from the UI to build them. Carrying the container in an `Action` puts DI wiring in the View, makes
+the payload something other than a fact about the event, and lets a caller hand the child a
+different container than the parent was built with — which is exactly what happens in tests.
 
 ---
 
